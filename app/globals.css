@@ -1,0 +1,14 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+body { font-feature-settings: "rlig" 1, "calt" 1; }
+
+.card {
+  @apply rounded-xl border border-zinc-800 bg-zinc-900/80 p-4 shadow-lg;
+}
+
+.badge-critical { @apply border-red-500/50 bg-red-950/30; }
+.badge-high { @apply border-amber-500/50 bg-amber-950/20; }
+.badge-medium { @apply border-yellow-500/30 bg-yellow-950/10; }
+.badge-low { @apply border-zinc-500/30 bg-zinc-800/50; }
