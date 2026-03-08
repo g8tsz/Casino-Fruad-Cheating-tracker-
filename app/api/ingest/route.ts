@@ -30,6 +30,14 @@ function normalizeEvent(raw: Record<string, unknown>): CasinoEvent | null {
 }
 
 export async function POST(request: Request) {
+  const ingestKey = process.env.INGEST_API_KEY;
+  if (ingestKey) {
+    const auth = request.headers.get('authorization');
+    const key = auth?.startsWith('Bearer ') ? auth.slice(7) : request.headers.get('x-api-key');
+    if (key !== ingestKey) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+  }
   try {
     const body = await request.json();
     const rawList = Array.isArray(body.events) ? body.events : Array.isArray(body) ? body : [];

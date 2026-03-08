@@ -38,8 +38,26 @@ async function fetchLive<T>(path: string, init?: RequestInit): Promise<T> {
   return res.json();
 }
 
-export function getAlerts(limit = 100): FraudAlert[] {
-  return alerts.slice(0, limit);
+export interface AlertFilters {
+  type?: string;
+  severity?: string;
+  playerId?: string;
+  acknowledged?: boolean;
+  from?: string; // ISO
+  to?: string; // ISO
+}
+
+export function getAlerts(limit = 100, filters?: AlertFilters): FraudAlert[] {
+  let list = [...alerts];
+  if (filters) {
+    if (filters.type) list = list.filter((a) => a.type === filters!.type);
+    if (filters.severity) list = list.filter((a) => a.severity === filters!.severity);
+    if (filters.playerId) list = list.filter((a) => a.playerId === filters!.playerId);
+    if (filters.acknowledged !== undefined) list = list.filter((a) => a.acknowledged === filters!.acknowledged);
+    if (filters.from) list = list.filter((a) => a.timestamp >= filters!.from!);
+    if (filters.to) list = list.filter((a) => a.timestamp <= filters!.to!);
+  }
+  return list.slice(0, limit);
 }
 
 export function getWatchList(activeOnly = true): WatchListEntry[] {
@@ -50,8 +68,24 @@ export function getWatchList(activeOnly = true): WatchListEntry[] {
   return list.slice(0, 200);
 }
 
-export function getRecentEvents(limit = 200): CasinoEvent[] {
-  return recentEvents.slice(0, limit);
+export interface EventFilters {
+  type?: string;
+  playerId?: string;
+  sessionId?: string;
+  from?: string;
+  to?: string;
+}
+
+export function getRecentEvents(limit = 200, filters?: EventFilters): CasinoEvent[] {
+  let list = [...recentEvents];
+  if (filters) {
+    if (filters.type) list = list.filter((e) => e.type === filters!.type);
+    if (filters.playerId) list = list.filter((e) => e.playerId === filters!.playerId);
+    if (filters.sessionId) list = list.filter((e) => e.sessionId === filters!.sessionId);
+    if (filters.from) list = list.filter((e) => e.timestamp >= filters!.from!);
+    if (filters.to) list = list.filter((e) => e.timestamp <= filters!.to!);
+  }
+  return list.slice(0, limit);
 }
 
 export function isOnWatchList(playerId?: string, sessionId?: string, tableId?: string): boolean {

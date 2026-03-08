@@ -7,23 +7,34 @@ const FRAUD_TYPES: FraudType[] = [
   'chip_passing', 'bad_request', 'odd_percentage', 'rate_abuse', 'session_anomaly',
 ];
 
-export async function GET() {
+function parseRange(range: string | null): number {
+  if (!range) return 24 * 60 * 60 * 1000;
+  const n = parseInt(range, 10);
+  if (range.endsWith('d') && !isNaN(n)) return n * 24 * 60 * 60 * 1000;
+  if (range.endsWith('h') && !isNaN(n)) return n * 60 * 60 * 1000;
+  if (!isNaN(n)) return n * 60 * 60 * 1000; // default hours
+  return 24 * 60 * 60 * 1000;
+}
+
+export async function GET(request: Request) {
+  const { searchParams } = new URL(request.url);
+  const rangeMs = parseRange(searchParams.get('range') || '24h');
   try {
     const alerts = getAlerts(500);
     const watchList = getWatchList(true);
     const events = getRecentEvents(500);
-    const oneDayAgo = Date.now() - 24 * 60 * 60 * 1000;
-    const alerts24h = alerts.filter((a) => new Date(a.timestamp).getTime() > oneDayAgo);
+    const since = Date.now() - rangeMs;
+    const alertsInRange = alerts.filter((a) => new Date(a.timestamp).getTime() > since);
     const byType = FRAUD_TYPES.reduce((acc, t) => {
-      acc[t] = alerts24h.filter((a) => a.type === t).length;
+      acc[t] = alertsInRange.filter((a) => a.type === t).length;
       return acc;
     }, {} as Record<FraudType, number>);
     const requests = events.filter((e) => e.type === 'request');
     const badRequests = events.filter((e) => e.type === 'request' && (e.statusCode ?? 0) >= 400);
     const badRequestRate = requests.length > 0 ? badRequests.length / requests.length : 0;
-    const oddPctCount = alerts24h.filter((a) => a.type === 'odd_percentage').length;
+    const oddPctCount = alertsInRange.filter((a) => a.type === 'odd_percentage').length;
     const stats: FraudStats = {
-      alertsLast24h: alerts24h.length,
+      alertsLast24h: alertsInRange.length,
       byType,
       badRequestRate: Math.round(badRequestRate * 1000) / 10,
       oddPercentageCount: oddPctCount,

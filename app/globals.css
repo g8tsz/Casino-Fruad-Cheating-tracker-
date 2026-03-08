@@ -2,13 +2,61 @@
 @tailwind components;
 @tailwind utilities;
 
-body { font-feature-settings: "rlig" 1, "calt" 1; }
-
-.card {
-  @apply rounded-xl border border-zinc-800 bg-zinc-900/80 p-4 shadow-lg;
+@layer base {
+  body {
+    font-feature-settings: "rlig" 1, "calt" 1;
+    background: linear-gradient(180deg, #0a0a0b 0%, #111113 50%, #0a0a0b 100%);
+  }
 }
 
-.badge-critical { @apply border-red-500/50 bg-red-950/30; }
-.badge-high { @apply border-amber-500/50 bg-amber-950/20; }
-.badge-medium { @apply border-yellow-500/30 bg-yellow-950/10; }
-.badge-low { @apply border-zinc-500/30 bg-zinc-800/50; }
+.card {
+  @apply rounded-xl border border-zinc-800/90 bg-zinc-900/90 p-4 shadow-xl shadow-black/20 backdrop-blur-sm;
+}
+
+.card:hover {
+  @apply border-zinc-700/80;
+}
+
+.badge-critical {
+  @apply border-red-500/60 bg-red-950/40 shadow-sm shadow-red-500/10;
+}
+.badge-high {
+  @apply border-amber-500/50 bg-amber-950/30 shadow-sm shadow-amber-500/10;
+}
+.badge-medium {
+  @apply border-yellow-500/40 bg-yellow-950/20;
+}
+.badge-low {
+  @apply border-zinc-500/40 bg-zinc-800/60;
+}
+
+/* Live pulse */
+.live-dot {
+  height: 0.5rem;
+  width: 0.5rem;
+  border-radius: 9999px;
+  background-color: rgb(16 185 129);
+  box-shadow: 0 0 8px rgba(16, 185, 129, 0.6);
+  animation: live-pulse 2s ease-in-out infinite;
+}
+@keyframes live-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.7; transform: scale(1.1); }
+}
+
+/* New alert highlight */
+.new-alert {
+  animation: new-alert 1.5s ease-out;
+}
+@keyframes new-alert {
+  0% { background-color: rgba(245, 158, 11, 0.25); }
+  100% { background-color: transparent; }
+}
+
+/* Tab */
+.tab-active {
+  @apply border-emerald-500/70 bg-zinc-800/80 text-emerald-300 font-medium;
+}
+.tab-inactive {
+  @apply border-transparent text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800/50;
+}
