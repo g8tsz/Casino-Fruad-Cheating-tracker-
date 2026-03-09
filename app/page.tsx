@@ -5,6 +5,8 @@ import { format } from 'date-fns';
 import {
   BarChart,
   Bar,
+  LineChart,
+  Line,
   XAxis,
   YAxis,
   Tooltip,
@@ -31,6 +33,12 @@ const TYPE_LABELS: Record<string, string> = {
   odd_percentage: 'Odd %',
   rate_abuse: 'Rate abuse',
   session_anomaly: 'Session anomaly',
+  repeated_bet_bot: 'Repeated bet (bot)',
+  impossible_win_sequence: 'Impossible win',
+  session_length_anomaly: 'Session length',
+  time_of_day_anomaly: 'Time-of-day',
+  multi_account_ip: 'Multi-account (IP)',
+  multi_account_device: 'Multi-account (device)',
 };
 
 type TabId = 'overview' | 'alerts' | 'watchlist' | 'events' | 'export';
@@ -46,6 +54,10 @@ export default function Dashboard() {
   const [loading, setLoading] = useState(true);
   const [prevAlertCount, setPrevAlertCount] = useState(0);
   const [statsRange, setStatsRange] = useState('24h');
+  const [alertsFrom, setAlertsFrom] = useState('');
+  const [alertsTo, setAlertsTo] = useState('');
+  const [eventsFrom, setEventsFrom] = useState('');
+  const [eventsTo, setEventsTo] = useState('');
   const [alertFilterType, setAlertFilterType] = useState('');
   const [alertFilterSeverity, setAlertFilterSeverity] = useState('');
   const [alertShowAck, setAlertShowAck] = useState<boolean | null>(null);
@@ -59,8 +71,12 @@ export default function Dashboard() {
     if (alertFilterType) alertParams.set('type', alertFilterType);
     if (alertFilterSeverity) alertParams.set('severity', alertFilterSeverity);
     if (alertShowAck !== null) alertParams.set('acknowledged', String(alertShowAck));
+    if (alertsFrom) alertParams.set('from', alertsFrom.includes('Z') ? alertsFrom : `${alertsFrom}:00.000Z`);
+    if (alertsTo) alertParams.set('to', alertsTo.includes('Z') ? alertsTo : `${alertsTo}:59.999Z`);
     const eventParams = new URLSearchParams();
     if (eventFilterType) eventParams.set('type', eventFilterType);
+    if (eventsFrom) eventParams.set('from', eventsFrom.includes('Z') ? eventsFrom : `${eventsFrom}:00.000Z`);
+    if (eventsTo) eventParams.set('to', eventsTo.includes('Z') ? eventsTo : `${eventsTo}:59.999Z`);
     Promise.all([
       fetch(`/api/alerts?limit=200&${alertParams}`).then((r) => r.json()),
       fetch(`/api/stats?${range}`).then((r) => r.json()),
@@ -78,7 +94,7 @@ export default function Dashboard() {
       })
       .catch(console.error)
       .finally(() => setLoading(false));
-  }, [statsRange, alertFilterType, alertFilterSeverity, alertShowAck, eventFilterType]);
+  }, [statsRange, alertFilterType, alertFilterSeverity, alertShowAck, eventFilterType, alertsFrom, alertsTo, eventsFrom, eventsTo]);
 
   useEffect(() => {
     load();
@@ -121,6 +137,12 @@ export default function Dashboard() {
   const exportJson = () => {
     window.open('/api/export?alerts=1000&events=1000', '_blank');
   };
+  const exportCsv = () => {
+    window.open('/api/export?alerts=1000&events=1000&format=csv', '_blank');
+  };
+  const openDigest = () => {
+    window.open('/api/export/digest', '_blank');
+  };
 
   const filteredAlerts = searchQuery.trim()
     ? alerts.filter(
@@ -157,6 +179,32 @@ export default function Dashboard() {
           .filter(([, v]) => v > 0)
           .map(([name, value]) => ({ name: TYPE_LABELS[name] || name, value }))
       : [];
+
+  // Alerts over time (bucket by hour for last 24h worth)
+  const alertsOverTimeBuckets = (() => {
+    const bucketMs = statsRange === '1h' ? 5 * 60 * 1000 : statsRange === '24h' ? 60 * 60 * 1000 : 24 * 60 * 60 * 1000;
+    const now = Date.now();
+    const windowMs = statsRange === '1h' ? 60 * 60 * 1000 : statsRange === '24h' ? 24 * 60 * 60 * 1000 : (statsRange === '7d' ? 7 : 30) * 24 * 60 * 60 * 1000;
+    const start = now - windowMs;
+    const buckets: Record<string, number> = {};
+    for (const a of alerts) {
+      const t = new Date(a.timestamp).getTime();
+      if (t < start) continue;
+      const key = new Date(Math.floor(t / bucketMs) * bucketMs).toISOString().slice(0, 13);
+      buckets[key] = (buckets[key] ?? 0) + 1;
+    }
+    return Object.entries(buckets).sort(([a], [b]) => a.localeCompare(b)).map(([name, value]) => ({ name: name.replace('T', ' '), value }));
+  })();
+
+  // Top flagged players and tables
+  const playerCounts: Record<string, number> = {};
+  const tableCounts: Record<string, number> = {};
+  for (const a of alerts) {
+    if (a.playerId) playerCounts[a.playerId] = (playerCounts[a.playerId] ?? 0) + 1;
+    if (a.tableId) tableCounts[a.tableId] = (tableCounts[a.tableId] ?? 0) + 1;
+  }
+  const topPlayers = Object.entries(playerCounts).sort(([, a], [, b]) => b - a).slice(0, 5).map(([name, value]) => ({ name, value }));
+  const topTables = Object.entries(tableCounts).sort(([, a], [, b]) => b - a).slice(0, 5).map(([name, value]) => ({ name, value }));
 
   const tabs: { id: TabId; label: string }[] = [
     { id: 'overview', label: 'Overview' },
@@ -209,7 +257,7 @@ export default function Dashboard() {
         <>
           <div className="mb-4 flex flex-wrap items-center gap-2">
             <span className="text-sm text-zinc-500">Stats range:</span>
-            {['24h', '7d', '30d'].map((r) => (
+            {['1h', '24h', '7d', '30d'].map((r) => (
               <button
                 key={r}
                 onClick={() => setStatsRange(r)}
@@ -273,6 +321,61 @@ export default function Dashboard() {
               </div>
             </div>
           )}
+          {alertsOverTimeBuckets.length > 0 && (
+            <div className="card mb-6">
+              <h2 className="mb-4 text-lg font-semibold text-white">Alerts over time</h2>
+              <div className="h-48">
+                <ResponsiveContainer width="100%" height="100%">
+                  <LineChart data={alertsOverTimeBuckets} margin={{ left: 0, right: 8 }}>
+                    <XAxis dataKey="name" stroke="#71717a" fontSize={10} />
+                    <YAxis stroke="#71717a" fontSize={12} />
+                    <Tooltip
+                      contentStyle={{
+                        backgroundColor: '#27272a',
+                        border: '1px solid #3f3f46',
+                        borderRadius: '8px',
+                      }}
+                    />
+                    <Line type="monotone" dataKey="value" stroke="#10b981" strokeWidth={2} dot={false} name="Alerts" />
+                  </LineChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+          )}
+          {(topPlayers.length > 0 || topTables.length > 0) && (
+            <div className="mb-6 grid gap-4 sm:grid-cols-2">
+              {topPlayers.length > 0 && (
+                <div className="card">
+                  <h2 className="mb-4 text-lg font-semibold text-white">Top flagged players</h2>
+                  <div className="h-40">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <BarChart data={topPlayers} layout="vertical" margin={{ left: 60 }}>
+                        <XAxis type="number" stroke="#71717a" fontSize={11} />
+                        <YAxis type="category" dataKey="name" stroke="#71717a" fontSize={10} width={55} />
+                        <Tooltip contentStyle={{ backgroundColor: '#27272a', border: '1px solid #3f3f46', borderRadius: '8px' }} />
+                        <Bar dataKey="value" fill="#f59e0b" radius={[0, 4, 4, 0]} />
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
+                </div>
+              )}
+              {topTables.length > 0 && (
+                <div className="card">
+                  <h2 className="mb-4 text-lg font-semibold text-white">Top flagged tables</h2>
+                  <div className="h-40">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <BarChart data={topTables} layout="vertical" margin={{ left: 60 }}>
+                        <XAxis type="number" stroke="#71717a" fontSize={11} />
+                        <YAxis type="category" dataKey="name" stroke="#71717a" fontSize={10} width={55} />
+                        <Tooltip contentStyle={{ backgroundColor: '#27272a', border: '1px solid #3f3f46', borderRadius: '8px' }} />
+                        <Bar dataKey="value" fill="#eab308" radius={[0, 4, 4, 0]} />
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
         </>
       )}
 
@@ -287,6 +390,31 @@ export default function Dashboard() {
               onChange={(e) => setSearchQuery(e.target.value)}
               className="max-w-xs rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm text-white placeholder-zinc-500"
             />
+            <span className="text-xs text-zinc-500">From</span>
+            <input
+              type="datetime-local"
+              value={alertsFrom}
+              onChange={(e) => setAlertsFrom(e.target.value)}
+              className="rounded-lg border border-zinc-700 bg-zinc-800 px-2 py-1.5 text-sm text-white"
+            />
+            <span className="text-xs text-zinc-500">To</span>
+            <input
+              type="datetime-local"
+              value={alertsTo}
+              onChange={(e) => setAlertsTo(e.target.value)}
+              className="rounded-lg border border-zinc-700 bg-zinc-800 px-2 py-1.5 text-sm text-white"
+            />
+            <button
+              onClick={() => {
+                const end = new Date();
+                const start = new Date(end.getTime() - 60 * 60 * 1000);
+                setAlertsFrom(start.toISOString().slice(0, 16));
+                setAlertsTo(end.toISOString().slice(0, 16));
+              }}
+              className="rounded-lg bg-zinc-700 px-2 py-1.5 text-xs text-zinc-300 hover:bg-zinc-600"
+            >
+              Last hour
+            </button>
             <select
               value={alertFilterType}
               onChange={(e) => setAlertFilterType(e.target.value)}
@@ -426,6 +554,31 @@ export default function Dashboard() {
               onChange={(e) => setSearchQuery(e.target.value)}
               className="max-w-xs rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm text-white placeholder-zinc-500"
             />
+            <span className="text-xs text-zinc-500">From</span>
+            <input
+              type="datetime-local"
+              value={eventsFrom}
+              onChange={(e) => setEventsFrom(e.target.value)}
+              className="rounded-lg border border-zinc-700 bg-zinc-800 px-2 py-1.5 text-sm text-white"
+            />
+            <span className="text-xs text-zinc-500">To</span>
+            <input
+              type="datetime-local"
+              value={eventsTo}
+              onChange={(e) => setEventsTo(e.target.value)}
+              className="rounded-lg border border-zinc-700 bg-zinc-800 px-2 py-1.5 text-sm text-white"
+            />
+            <button
+              onClick={() => {
+                const end = new Date();
+                const start = new Date(end.getTime() - 60 * 60 * 1000);
+                setEventsFrom(start.toISOString().slice(0, 16));
+                setEventsTo(end.toISOString().slice(0, 16));
+              }}
+              className="rounded-lg bg-zinc-700 px-2 py-1.5 text-xs text-zinc-300 hover:bg-zinc-600"
+            >
+              Last hour
+            </button>
             <select
               value={eventFilterType}
               onChange={(e) => setEventFilterType(e.target.value)}
@@ -472,22 +625,36 @@ export default function Dashboard() {
           <div className="card">
             <h2 className="mb-2 text-lg font-semibold text-white">Export</h2>
             <p className="mb-3 text-sm text-zinc-400">
-              Download alerts and events as JSON for backup or analysis.
+              Download alerts and events as JSON or CSV. Daily digest for scheduled reporting.
             </p>
-            <button
-              onClick={exportJson}
-              className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-500"
-            >
-              Download JSON (alerts + events)
-            </button>
+            <div className="flex flex-wrap gap-2">
+              <button
+                onClick={exportJson}
+                className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-500"
+              >
+                Download JSON
+              </button>
+              <button
+                onClick={exportCsv}
+                className="rounded-lg bg-zinc-600 px-4 py-2 text-sm font-medium text-white hover:bg-zinc-500"
+              >
+                Download CSV
+              </button>
+              <button
+                onClick={openDigest}
+                className="rounded-lg bg-zinc-700 px-4 py-2 text-sm font-medium text-zinc-200 hover:bg-zinc-600"
+              >
+                Daily digest
+              </button>
+            </div>
             <p className="mt-2 text-xs text-zinc-500">
-              Or open: GET /api/export?alerts=1000&events=1000
+              GET /api/export?alerts=1000&events=1000&format=json|csv · GET /api/export/digest?date=YYYY-MM-DD
             </p>
           </div>
           <div className="card">
             <h2 className="mb-2 text-lg font-semibold text-white">Config</h2>
             <p className="mb-3 text-sm text-zinc-400">
-              Thresholds and options (values masked). Set via env vars.
+              Threshold preset and options. Set THRESHOLD_PRESET=strict|normal|lenient and env vars.
             </p>
             <pre className="overflow-x-auto rounded-lg bg-zinc-950/80 p-3 text-xs text-zinc-400">
               {config ? JSON.stringify(config, null, 2) : '—'}

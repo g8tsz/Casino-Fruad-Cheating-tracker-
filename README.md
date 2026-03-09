@@ -1,8 +1,8 @@
 # Casino Fraud & Cheating Tracker
 
-**Repository:** [github.com/g8tsz/Casino-Fruad-Cheating-tracker-](https://github.com/g8tsz/Casino-Fruad-Cheating-tracker-)
+**Repository:** [github.com/g8tsz/Casino-Fruad-Cheating-tracker-](https://github.com/g8tsz/Casino-Fruad-Cheating-tracker-) (note: repo name has typo “Fruad”; correct spelling is “Fraud”. Clone URL unchanged.)
 
-Track **fraud and cheating** for **online and land-based** casinos: odd win %, bad requests, RTP/slot tampering, collusion, capping, chip passing, and rate abuse. Works with **live data** from most website casinos via a simple ingest API.
+Track **fraud and cheating** for **online and land-based** casinos: odd win %, bad requests, RTP/slot tampering, collusion, capping, chip passing, rate abuse, repeated-bet bots, impossible win sequences, session/time-of-day anomalies, and multi-account (IP/device). Works with **live data** from most website casinos via a simple ingest API.
 
 ---
 
@@ -14,11 +14,16 @@ Track **fraud and cheating** for **online and land-based** casinos: odd win %, b
 - **Collusion & card-counting** – Watch list + same-table/correlated activity signals.
 - **Capping & chip passing** – Large chip moves between players, add-on bet patterns.
 - **Rate abuse** – High request rate per session (bots, scraping).
-- **Watch list** – Players, tables, sessions to flag for collusion/behavior review.
-- **Live data** – POST events to `/api/ingest`; works with any platform that can send JSON.
-- **Dashboard** – Tabs: Overview (stats + chart), Alerts (filters, search, ack), Watch list, Events (filters), Export & config. Stats time range: 24h / 7d / 30d. Export alerts and events as JSON.
-- **Optional ingest auth** – Set `INGEST_API_KEY` to require `Authorization: Bearer <key>` or `X-API-Key: <key>` on ingest.
-- **Alert cooldown** – Same alert type for the same player/session is throttled (default 10 min) to reduce noise.
+- **Repeated bet (bot)** – Same bet amount repeated many times in a session.
+- **Impossible win sequence** – Wins without prior bets (data tampering or ingest error).
+- **Session length / time-of-day anomalies** – Unusual session duration or activity concentration.
+- **Multi-account (IP / device)** – Same IP or `deviceId` used by many players.
+- **Watch list** – Players, tables, sessions, IPs to flag for collusion/behavior review.
+- **Live data** – POST events to `/api/ingest`; optional `ip` and `deviceId` for geo/device rules.
+- **Dashboard** – Overview (stats, alerts by type, alerts over time, top flagged players/tables), Alerts and Events with date range and “Last hour” filter, Export (JSON + CSV, daily digest), Config with **threshold presets** (strict / normal / lenient).
+- **Ingest** – Optional auth; **Idempotency-Key** header to dedupe; **rate limit** per IP or API key; **validation** with clear error messages; **webhook** on high/critical alerts.
+- **Retention** – Configurable retention for events and alerts; cleanup runs on ingest.
+- **Audit log** – Watch list and config changes (GET `/api/audit`).
 
 ---
 
@@ -35,50 +40,45 @@ Open **http://localhost:3001**. Use mock data by sending events to the ingest en
 
 ---
 
-## Ingest API (for website casinos)
+## Development
 
-Send events from your casino site to trigger detection. Works with **most website casinos** that can send HTTP POST with JSON.
+- **Lint:** `npm run lint`
+- **Build:** `npm run build`
+- **Start (prod):** `npm start` (port 3001)
+
+Env vars are documented in **Config** below. Copy `.env.example` to `.env` and set as needed.
+
+---
+
+## Ingest API (for website casinos)
 
 **POST /api/ingest**
 
-Optional auth (if `INGEST_API_KEY` is set): `Authorization: Bearer <key>` or `X-API-Key: <key>`.
+- Optional auth: `Authorization: Bearer <key>` or `X-API-Key: <key>` when `INGEST_API_KEY` is set.
+- **Idempotency-Key:** Send a unique key (e.g. UUID) to dedupe retries; same key returns cached response.
+- **Rate limit:** Per IP or per API key (default 120/min; `INGEST_RATE_LIMIT_PER_MIN`).
+- **Validation:** Invalid payloads return 400 with `message`, `field`, `index`, and `details`.
 
-Body (either format):
+Body: `{ "events": [ ... ] }` or `[ ... ]`. Events may include **ip** and **deviceId** for multi-account detection.
 
-```json
-{ "events": [ { "type": "bet", "playerId": "P1", "sessionId": "S1", "amount": 100, "timestamp": "2025-03-02T12:00:00Z" } ] }
-```
+| type | Optional fields |
+|------|------------------|
+| `bet` | playerId, sessionId, gameId, tableId, amount, ip, deviceId |
+| `win` | playerId, sessionId, gameId, amount, expectedRtp, ip, deviceId |
+| `request` | sessionId, path, method, statusCode, responseTimeMs |
+| `session_start` / `session_end` | playerId, sessionId |
+| `chip_move` | fromPlayerId, toPlayerId, amount, tableId |
 
-or
-
-```json
-[
-  { "type": "win", "playerId": "P1", "gameId": "slot-1", "amount": 150, "expectedRtp": 96, "timestamp": "2025-03-02T12:01:00Z" },
-  { "type": "request", "sessionId": "S1", "path": "/api/spin", "statusCode": 401, "timestamp": "2025-03-02T12:00:00Z" }
-]
-```
-
-**Event types**
-
-| type | Use | Optional fields |
-|------|-----|------------------|
-| `bet` | Bet placed | playerId, sessionId, gameId, tableId, amount |
-| `win` | Win paid | playerId, sessionId, gameId, amount, **expectedRtp** (for RTP checks) |
-| `request` | HTTP request (online) | sessionId, path, method, **statusCode**, responseTimeMs |
-| `session_start` / `session_end` | Session bounds | playerId, sessionId |
-| `chip_move` | Chip transfer (live tables) | fromPlayerId, toPlayerId, amount, tableId |
-
-All events need **timestamp** (ISO string). Detection runs on ingest; alerts appear on the dashboard.
+All events need **timestamp** (ISO string). On high/critical alert, optional **WEBHOOK_URL** is POSTed a summary.
 
 ---
 
 ## Dashboard
 
-- **Overview** – Stats (alerts, bad request %, odd % count, watch list size), time range selector (24h / 7d / 30d), alerts-by-type chart.
-- **Alerts** – List with filters (type, severity, unack only), search (title, player, session), acknowledge.
-- **Watch list** – Add/remove players, tables, sessions.
-- **Events** – Recent ingested events with type filter and search.
-- **Export & config** – Download alerts and events as JSON; view config (env indicators, masked).
+- **Overview** – Stats range 1h / 24h / 7d / 30d; alerts by type; alerts over time (line chart); top flagged players and tables.
+- **Alerts** – Date range (from/to), “Last hour” quick filter, type/severity/unack only, search.
+- **Events** – Date range, “Last hour”, type filter, search.
+- **Export & config** – Download JSON or CSV; daily digest (GET `/api/export/digest?date=YYYY-MM-DD`); view config and **preset** (strict / normal / lenient).
 
 ---
 
@@ -86,15 +86,16 @@ All events need **timestamp** (ISO string). Detection runs on ingest; alerts app
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/api/ingest` | POST | Send events (body: `{ events: [...] }` or `[...]`). Optional: `Authorization: Bearer <key>` or `X-API-Key` if `INGEST_API_KEY` set. |
-| `/api/alerts` | GET | List alerts. Query: `limit`, `type`, `severity`, `playerId`, `acknowledged`, `from`, `to`. |
+| `/api/ingest` | POST | Send events. Optional: Idempotency-Key, Bearer/X-API-Key. Rate limited. |
+| `/api/alerts` | GET | List alerts. Query: limit, type, severity, playerId, acknowledged, from, to. |
 | `/api/alerts` | PATCH | Acknowledge alert (body: `{ id }`). |
-| `/api/watchlist` | GET | List watch list. |
-| `/api/watchlist` | POST | Add entry (body: `{ kind, value, reason }`). |
-| `/api/stats` | GET | Fraud stats. Query: `range` (e.g. `24h`, `7d`, `30d`). |
-| `/api/events` | GET | Recent events. Query: `limit`, `type`, `playerId`, `sessionId`, `from`, `to`. |
-| `/api/export` | GET | Download JSON. Query: `alerts`, `events` (limits, 0 = skip). |
-| `/api/config` | GET | Config indicators (masked) for dashboard. |
+| `/api/watchlist` | GET / POST | List or add watch list entry (kind, value, reason). |
+| `/api/stats` | GET | Fraud stats. Query: range (1h, 24h, 7d, 30d). |
+| `/api/events` | GET | Recent events. Query: limit, type, playerId, sessionId, from, to. |
+| `/api/export` | GET | Download JSON or CSV. Query: alerts, events, format=json\|csv. |
+| `/api/export/digest` | GET | Daily digest. Query: date=YYYY-MM-DD. |
+| `/api/config` | GET | Thresholds and preset (mask=false to see values). |
+| `/api/audit` | GET | Audit log (watch list/config changes). Query: limit. |
 
 ---
 
@@ -102,18 +103,26 @@ All events need **timestamp** (ISO string). Detection runs on ingest; alerts app
 
 | Env | Description |
 |-----|-------------|
+| `THRESHOLD_PRESET` | `strict` \| `normal` \| `lenient` (default `normal`) |
 | `DATA_SOURCE` | `memory` (default) or `api` |
 | `LIVE_API_BASE_URL` | Your API base when `DATA_SOURCE=api` |
 | `LIVE_API_KEY` | Bearer token for your API |
-| `INGEST_API_KEY` | If set, POST /api/ingest requires this as Bearer or X-API-Key |
-| `RTP_MIN_PCT` / `RTP_MAX_PCT` | Allowed RTP range (default 85–102%) |
-| `WIN_RATE_SUSPICIOUS_PCT` | Win rate above this triggers odd % alert (default 65) |
-| `BAD_REQUEST_RATE_THRESHOLD` | Bad-request ratio threshold (0–1) |
-| `RATE_ABUSE_PER_MIN` | Requests per minute per session to flag (default 120) |
-| `ALERT_COOLDOWN_MS` | Cooldown before re-raising same alert type for same entity (default 600000 = 10 min) |
+| `INGEST_API_KEY` | If set, POST /api/ingest requires Bearer or X-API-Key |
+| `INGEST_RATE_LIMIT_PER_MIN` | Max ingest requests per minute per IP/key (default 120) |
+| `WEBHOOK_URL` | POST summary when high/critical alert fires |
+| `RTP_MIN_PCT` / `RTP_MAX_PCT` | Allowed RTP range (preset overrides) |
+| `WIN_RATE_SUSPICIOUS_PCT` | Win rate above this triggers odd % alert |
+| `RATE_ABUSE_PER_MIN` | Requests per minute to flag rate abuse |
+| `ALERT_COOLDOWN_MS` | Cooldown same alert type+entity (default 10 min) |
+| `REPEATED_BET_COUNT_THRESHOLD` | Same bet amount repeated this many times → bot alert |
+| `SESSION_LENGTH_MAX_HOURS` | Session longer than this → session length anomaly |
+| `PLAYERS_PER_IP_THRESHOLD` | Distinct players per IP to flag multi-account |
+| `PLAYERS_PER_DEVICE_THRESHOLD` | Distinct players per deviceId to flag multi-account |
+| `EVENTS_RETENTION_DAYS` | Delete events older than this (default 7) |
+| `ALERTS_RETENTION_DAYS` | Delete alerts older than this (default 30) |
 
 ---
 
 ## Tech
 
-Next.js 14, TypeScript, Tailwind, Recharts. No database required for default mode.
+Next.js 14, TypeScript, Tailwind, Recharts. No database required for default mode (in-memory store with optional retention).

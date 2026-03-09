@@ -5,6 +5,8 @@ import type { FraudStats, FraudType } from '@/lib/types';
 const FRAUD_TYPES: FraudType[] = [
   'collusion', 'card_counting', 'slot_tampering', 'meter_anomaly', 'capping',
   'chip_passing', 'bad_request', 'odd_percentage', 'rate_abuse', 'session_anomaly',
+  'repeated_bet_bot', 'impossible_win_sequence', 'session_length_anomaly', 'time_of_day_anomaly',
+  'multi_account_ip', 'multi_account_device',
 ];
 
 function parseRange(range: string | null): number {
@@ -12,6 +14,7 @@ function parseRange(range: string | null): number {
   const n = parseInt(range, 10);
   if (range.endsWith('d') && !isNaN(n)) return n * 24 * 60 * 60 * 1000;
   if (range.endsWith('h') && !isNaN(n)) return n * 60 * 60 * 1000;
+  if (range === '1h') return 60 * 60 * 1000;
   if (!isNaN(n)) return n * 60 * 60 * 1000; // default hours
   return 24 * 60 * 60 * 1000;
 }

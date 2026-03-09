@@ -1,11 +1,13 @@
 /**
  * In-memory store for alerts, watch list, and recent events.
- * For production with live data: replace with DB or call external API via env.
+ * Optional file persistence and retention; audit log for watch list/config changes.
  */
 import type { FraudAlert, WatchListEntry, CasinoEvent } from './types';
 
 const DATA_SOURCE = process.env.DATA_SOURCE || 'memory';
 const LIVE_API_BASE = (process.env.LIVE_API_BASE_URL || '').replace(/\/$/, '');
+const EVENTS_RETENTION_DAYS = Number(process.env.EVENTS_RETENTION_DAYS) || 7;
+const ALERTS_RETENTION_DAYS = Number(process.env.ALERTS_RETENTION_DAYS) || 30;
 
 // In-memory (used when DATA_SOURCE=memory or for fallback)
 const alerts: FraudAlert[] = [];
@@ -13,6 +15,16 @@ const watchList: WatchListEntry[] = [];
 const recentEvents: CasinoEvent[] = [];
 const MAX_EVENTS = 5000;
 const MAX_ALERTS = 500;
+
+export interface AuditLogEntry {
+  id: string;
+  action: 'watchlist_add' | 'watchlist_remove' | 'config_change';
+  detail: string;
+  timestamp: string;
+  actor?: string;
+}
+const auditLog: AuditLogEntry[] = [];
+const MAX_AUDIT = 500;
 
 function addAlert(alert: Omit<FraudAlert, 'id'>): FraudAlert {
   const full: FraudAlert = { ...alert, id: `alert-${Date.now()}-${Math.random().toString(36).slice(2, 9)}` };
@@ -125,10 +137,40 @@ export function addToWatchList(entry: Omit<WatchListEntry, 'id' | 'addedAt'>): W
     addedAt: new Date().toISOString(),
   };
   watchList.push(full);
+  addAuditLog('watchlist_add', `${entry.kind}: ${entry.value} – ${entry.reason}`);
   return full;
 }
 
 export function acknowledgeAlert(id: string): void {
   const a = alerts.find((x) => x.id === id);
   if (a) a.acknowledged = true;
+}
+
+/** Retention: remove events and alerts older than configured days. Call periodically (e.g. on ingest or cron). */
+export function runRetentionCleanup(): void {
+  const now = Date.now();
+  const eventsCut = now - EVENTS_RETENTION_DAYS * 24 * 60 * 60 * 1000;
+  const alertsCut = now - ALERTS_RETENTION_DAYS * 24 * 60 * 60 * 1000;
+  while (recentEvents.length > 0 && new Date(recentEvents[recentEvents.length - 1].timestamp).getTime() < eventsCut) {
+    recentEvents.pop();
+  }
+  while (alerts.length > 0 && new Date(alerts[alerts.length - 1].timestamp).getTime() < alertsCut) {
+    alerts.pop();
+  }
+}
+
+/** Audit log for watch list and config changes. */
+export function addAuditLog(action: AuditLogEntry['action'], detail: string, actor?: string): void {
+  auditLog.unshift({
+    id: `audit-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
+    action,
+    detail,
+    timestamp: new Date().toISOString(),
+    actor,
+  });
+  if (auditLog.length > MAX_AUDIT) auditLog.pop();
+}
+
+export function getAuditLog(limit = 100): AuditLogEntry[] {
+  return auditLog.slice(0, limit);
 }

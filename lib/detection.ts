@@ -1,17 +1,16 @@
 /**
- * Fraud & cheating detection: RTP/slot tampering, bad requests, odd %, collusion, capping, chip passing.
- * Runs on ingested events; thresholds configurable via env.
+ * Fraud & cheating detection: RTP/slot tampering, bad requests, odd %, collusion, capping, chip passing,
+ * repeated bet (bot), impossible win sequence, session length/time-of-day, geo/device multi-account.
+ * Thresholds from lib/config (preset + env).
  */
 import type { CasinoEvent, FraudAlert, FraudType, Severity } from './types';
+import { getThresholds } from './config';
 import { persistAlert } from './store';
 import { getRecentEvents, isOnWatchList } from './store';
 
-const RTP_MIN = Number(process.env.RTP_MIN_PCT) || 85;
-const RTP_MAX = Number(process.env.RTP_MAX_PCT) || 102;
-const BAD_REQUEST_THRESHOLD = Number(process.env.BAD_REQUEST_RATE_THRESHOLD) || 0.15;
-const WIN_RATE_SUSPICIOUS = Number(process.env.WIN_RATE_SUSPICIOUS_PCT) || 65;
-const RATE_ABUSE_REQUESTS_PER_MIN = Number(process.env.RATE_ABUSE_PER_MIN) || 120;
-const ALERT_COOLDOWN_MS = Number(process.env.ALERT_COOLDOWN_MS) || 10 * 60 * 1000; // 10 min same type+entity
+function cfg() {
+  return getThresholds();
+}
 
 // In-memory cooldown: "type:playerId" or "type:sessionId" -> last raised time
 const alertCooldown = new Map<string, number>();
@@ -25,7 +24,7 @@ function shouldRaise(type: FraudType, evt?: { playerId?: string; sessionId?: str
   const key = cooldownKey(type, evt);
   const last = alertCooldown.get(key);
   const now = Date.now();
-  if (last && now - last < ALERT_COOLDOWN_MS) return false;
+  if (last && now - last < cfg().alertCooldownMs) return false;
   alertCooldown.set(key, now);
   return true;
 }
@@ -81,6 +80,34 @@ export async function runDetections(events: CasinoEvent[]): Promise<FraudAlert[]
     raised.push(await persistAlert(collusionAlert));
   }
 
+  // New: repeated same bet amount (possible bot)
+  const repeatedBetAlerts = detectRepeatedBetAmount(recent);
+  for (const alert of repeatedBetAlerts) {
+    if (shouldRaise('repeated_bet_bot', { playerId: alert.playerId, sessionId: alert.sessionId })) {
+      raised.push(await persistAlert(alert));
+    }
+  }
+  const impossibleAlert = detectImpossibleWinSequence(recent);
+  if (impossibleAlert && shouldRaise('impossible_win_sequence', { playerId: impossibleAlert.playerId })) {
+    raised.push(await persistAlert(impossibleAlert));
+  }
+  const sessionLenAlert = detectSessionLengthAnomaly(recent);
+  if (sessionLenAlert && shouldRaise('session_length_anomaly', { sessionId: sessionLenAlert.sessionId })) {
+    raised.push(await persistAlert(sessionLenAlert));
+  }
+  const todAlert = detectTimeOfDayAnomaly(recent);
+  if (todAlert && shouldRaise('time_of_day_anomaly', { sessionId: todAlert.sessionId })) {
+    raised.push(await persistAlert(todAlert));
+  }
+  const ipAlert = detectMultiAccountIp(recent);
+  if (ipAlert && shouldRaise('multi_account_ip', { playerId: ipAlert.playerId })) {
+    raised.push(await persistAlert(ipAlert));
+  }
+  const devAlert = detectMultiAccountDevice(recent);
+  if (devAlert && shouldRaise('multi_account_device', { playerId: devAlert.playerId })) {
+    raised.push(await persistAlert(devAlert));
+  }
+
   // Per-player suspicious win rate (same threshold, but per player for clearer attribution)
   const perPlayerAlerts = detectPerPlayerOddPercentage(recent);
   for (const alert of perPlayerAlerts) {
@@ -123,18 +150,19 @@ function detectBadRequest(evt: CasinoEvent, _all: CasinoEvent[]): Omit<FraudAler
 }
 
 function detectRtpAnomaly(evt: CasinoEvent): Omit<FraudAlert, 'id'> | null {
+  const { rtpMin, rtpMax } = cfg();
   const rtp = evt.expectedRtp!;
-  if (rtp < RTP_MIN || rtp > RTP_MAX) {
+  if (rtp < rtpMin || rtp > rtpMax) {
     return {
       type: 'slot_tampering',
       severity: 'high',
       title: `RTP out of range: ${rtp.toFixed(1)}%`,
-      description: `Observed RTP ${rtp.toFixed(1)}% for game ${evt.gameId ?? 'unknown'}. Expected range ${RTP_MIN}–${RTP_MAX}%.`,
+      description: `Observed RTP ${rtp.toFixed(1)}% for game ${evt.gameId ?? 'unknown'}. Expected range ${rtpMin}–${rtpMax}%.`,
       timestamp: evt.timestamp,
       gameId: evt.gameId,
       playerId: evt.playerId,
       metric: rtp,
-      expectedRange: `${RTP_MIN}–${RTP_MAX}%`,
+      expectedRange: `${rtpMin}–${rtpMax}%`,
       suggestedAction: 'Verify meter readings; lock game and schedule technical review.',
       acknowledged: false,
     };
@@ -161,6 +189,7 @@ function detectChipPassing(evt: CasinoEvent, _all: CasinoEvent[]): Omit<FraudAle
 }
 
 function detectOddPercentage(recent: CasinoEvent[]): Omit<FraudAlert, 'id'> | null {
+  const winRateSuspicious = cfg().winRateSuspiciousPct;
   const wins = recent.filter((e) => e.type === 'win' && e.amount != null);
   const bets = recent.filter((e) => e.type === 'bet' && e.amount != null);
   if (bets.length < 20) return null;
@@ -168,15 +197,15 @@ function detectOddPercentage(recent: CasinoEvent[]): Omit<FraudAlert, 'id'> | nu
   const totalWin = wins.reduce((s, e) => s + (e.amount ?? 0), 0);
   if (totalBet <= 0) return null;
   const winPct = (totalWin / totalBet) * 100;
-  if (winPct >= WIN_RATE_SUSPICIOUS) {
+  if (winPct >= winRateSuspicious) {
     return {
       type: 'odd_percentage',
       severity: winPct > 80 ? 'critical' : 'high',
       title: `Suspicious win rate: ${winPct.toFixed(1)}%`,
-      description: `Session/aggregate win rate ${winPct.toFixed(1)}% over ${bets.length} bets. Expected range typically below ${WIN_RATE_SUSPICIOUS}%.`,
+      description: `Session/aggregate win rate ${winPct.toFixed(1)}% over ${bets.length} bets. Expected range typically below ${winRateSuspicious}%.`,
       timestamp: new Date().toISOString(),
       metric: winPct,
-      expectedRange: `< ${WIN_RATE_SUSPICIOUS}%`,
+      expectedRange: `< ${winRateSuspicious}%`,
       suggestedAction: 'Review player session; check for exploit or game bug.',
       acknowledged: false,
     };
@@ -202,10 +231,11 @@ function detectPerPlayerOddPercentage(recent: CasinoEvent[]): Array<Omit<FraudAl
     byPlayer.get(p)!.win += e.amount ?? 0;
   }
   const out: Array<Omit<FraudAlert, 'id'>> = [];
+  const winRateSuspicious = cfg().winRateSuspiciousPct;
   for (const [playerId, row] of Array.from(byPlayer)) {
     if (row.count < 15 || row.bet <= 0) continue;
     const winPct = (row.win / row.bet) * 100;
-    if (winPct >= WIN_RATE_SUSPICIOUS) {
+    if (winPct >= winRateSuspicious) {
       out.push({
         type: 'odd_percentage',
         severity: winPct > 80 ? 'critical' : 'high',
@@ -214,7 +244,7 @@ function detectPerPlayerOddPercentage(recent: CasinoEvent[]): Array<Omit<FraudAl
         timestamp: new Date().toISOString(),
         playerId,
         metric: winPct,
-        expectedRange: `< ${WIN_RATE_SUSPICIOUS}%`,
+        expectedRange: `< ${winRateSuspicious}%`,
         suggestedAction: 'Review player history; consider watch list or session review.',
         acknowledged: false,
       });
@@ -231,17 +261,19 @@ function detectRateAbuse(recent: CasinoEvent[]): Omit<FraudAlert, 'id'> | null {
     if (!bySession.has(key)) bySession.set(key, []);
     bySession.get(key)!.push(r);
   }
+  const rateLimit = cfg().rateAbusePerMin;
   const oneMinAgo = Date.now() - 60 * 1000;
-  for (const [, evts] of Array.from(bySession)) {
+  for (const [sess, evts] of Array.from(bySession)) {
     const inLastMin = evts.filter((e) => new Date(e.timestamp).getTime() > oneMinAgo).length;
-    if (inLastMin >= RATE_ABUSE_REQUESTS_PER_MIN) {
+    if (inLastMin >= rateLimit) {
       return {
         type: 'rate_abuse',
         severity: 'high',
         title: `High request rate: ${inLastMin}/min`,
-        description: `Session/player exceeded ${RATE_ABUSE_REQUESTS_PER_MIN} requests/min. Possible bot or scraping.`,
+        description: `Session/player exceeded ${rateLimit} requests/min. Possible bot or scraping.`,
         timestamp: new Date().toISOString(),
-        metric: inLastMin / RATE_ABUSE_REQUESTS_PER_MIN,
+        sessionId: sess !== 'unknown' ? sess : undefined,
+        metric: inLastMin / rateLimit,
         suggestedAction: 'Apply rate limit; consider CAPTCHA or block.',
         acknowledged: false,
       };
@@ -274,6 +306,189 @@ function detectCollusionSignals(recent: CasinoEvent[]): Omit<FraudAlert, 'id'> |
           acknowledged: false,
         };
       }
+    }
+  }
+  return null;
+}
+
+/** Repeated same bet amount (possible bot). */
+function detectRepeatedBetAmount(recent: CasinoEvent[]): Array<Omit<FraudAlert, 'id'>> {
+  const threshold = cfg().repeatedBetCountThreshold;
+  const bets = recent.filter((e) => e.type === 'bet' && e.amount != null && (e.playerId || e.sessionId));
+  const byEntity = new Map<string, CasinoEvent[]>();
+  for (const b of bets) {
+    const key = b.playerId ?? b.sessionId ?? 'unknown';
+    if (!byEntity.has(key)) byEntity.set(key, []);
+    byEntity.get(key)!.push(b);
+  }
+  const out: Array<Omit<FraudAlert, 'id'>> = [];
+  for (const [entity, evts] of Array.from(byEntity)) {
+    const byAmount = new Map<number, number>();
+    for (const e of evts) {
+      const amt = e.amount!;
+      byAmount.set(amt, (byAmount.get(amt) ?? 0) + 1);
+    }
+    for (const [amount, count] of Array.from(byAmount)) {
+      if (count >= threshold) {
+        out.push({
+          type: 'repeated_bet_bot',
+          severity: 'medium',
+          title: `Repeated bet amount: ${amount} × ${count}`,
+          description: `Same bet amount ${amount} repeated ${count} times. Possible bot or scripted play.`,
+          timestamp: new Date().toISOString(),
+          playerId: entity !== 'unknown' ? entity : undefined,
+          sessionId: entity !== 'unknown' ? entity : undefined,
+          metric: count,
+          suggestedAction: 'Review player session; consider CAPTCHA or limit identical bets.',
+          acknowledged: false,
+        });
+        break;
+      }
+    }
+  }
+  return out;
+}
+
+/** Win without prior bet in same session (impossible sequence). */
+function detectImpossibleWinSequence(recent: CasinoEvent[]): Omit<FraudAlert, 'id'> | null {
+  const bySession = new Map<string, { bets: number; wins: number }>();
+  for (const e of recent) {
+    const key = e.sessionId ?? e.playerId ?? 'global';
+    if (!bySession.has(key)) bySession.set(key, { bets: 0, wins: 0 });
+    const row = bySession.get(key)!;
+    if (e.type === 'bet') row.bets++;
+    if (e.type === 'win') row.wins++;
+  }
+  for (const [session, row] of Array.from(bySession)) {
+    if (row.wins >= 3 && row.bets === 0) {
+      return {
+        type: 'impossible_win_sequence',
+        severity: 'high',
+        title: 'Impossible win sequence',
+        description: `Session has ${row.wins} win(s) with no prior bet events. Possible data tampering or ingest error.`,
+        timestamp: new Date().toISOString(),
+        sessionId: session !== 'global' ? session : undefined,
+        playerId: session !== 'global' ? session : undefined,
+        suggestedAction: 'Verify event order and ingest pipeline.',
+        acknowledged: false,
+      };
+    }
+  }
+  return null;
+}
+
+/** Session length exceeds configured max hours. */
+function detectSessionLengthAnomaly(recent: CasinoEvent[]): Omit<FraudAlert, 'id'> | null {
+  const maxHours = cfg().sessionLengthMaxHours;
+  const sessions = new Map<string, { first: number; last: number }>();
+  for (const e of recent) {
+    const key = e.sessionId ?? e.playerId ?? 'unknown';
+    if (!key || key === 'unknown') continue;
+    const t = new Date(e.timestamp).getTime();
+    if (!sessions.has(key)) sessions.set(key, { first: t, last: t });
+    const row = sessions.get(key)!;
+    row.first = Math.min(row.first, t);
+    row.last = Math.max(row.last, t);
+  }
+  for (const [sessionId, row] of Array.from(sessions)) {
+    const hours = (row.last - row.first) / (60 * 60 * 1000);
+    if (hours >= maxHours) {
+      return {
+        type: 'session_length_anomaly',
+        severity: 'medium',
+        title: `Session length anomaly: ${hours.toFixed(1)}h`,
+        description: `Session ${sessionId} spans ${hours.toFixed(1)} hours (max ${maxHours}h). Unusual duration.`,
+        timestamp: new Date().toISOString(),
+        sessionId,
+        metric: hours,
+        suggestedAction: 'Review session; consider session timeout or limits.',
+        acknowledged: false,
+      };
+    }
+  }
+  return null;
+}
+
+/** Unusual time-of-day concentration (e.g. all activity in one hour). */
+function detectTimeOfDayAnomaly(recent: CasinoEvent[]): Omit<FraudAlert, 'id'> | null {
+  if (recent.length < 30) return null;
+  const byHour = new Map<number, number>();
+  for (const e of recent) {
+    const h = new Date(e.timestamp).getUTCHours();
+    byHour.set(h, (byHour.get(h) ?? 0) + 1);
+  }
+  const values = Array.from(byHour.values());
+  const max = values.length > 0 ? Math.max(...values) : 0;
+  const total = recent.length;
+  if (total >= 30 && max / total >= 0.7) {
+    const hour = Array.from(byHour.entries()).find(([, c]) => c === max)?.[0] ?? 0;
+    return {
+      type: 'time_of_day_anomaly',
+      severity: 'low',
+      title: `Time-of-day concentration: ${hour}:00 UTC`,
+      description: `${Math.round((max / total) * 100)}% of events in one hour. May indicate automated or scripted activity.`,
+      timestamp: new Date().toISOString(),
+      metric: max / total,
+      suggestedAction: 'Review activity pattern; optional additional checks.',
+      acknowledged: false,
+    };
+  }
+  return null;
+}
+
+/** Same IP, many different players (multi-account). */
+function detectMultiAccountIp(recent: CasinoEvent[]): Omit<FraudAlert, 'id'> | null {
+  const threshold = cfg().playersPerIpThreshold;
+  const withIp = recent.filter((e) => e.ip && (e.playerId || e.sessionId));
+  if (withIp.length < threshold * 2) return null;
+  const byIp = new Map<string, Set<string>>();
+  for (const e of withIp) {
+    const ip = e.ip!;
+    const entity = e.playerId ?? e.sessionId ?? 'unknown';
+    if (!byIp.has(ip)) byIp.set(ip, new Set());
+    byIp.get(ip)!.add(entity);
+  }
+  for (const [ip, players] of Array.from(byIp)) {
+    if (players.size >= threshold) {
+      return {
+        type: 'multi_account_ip',
+        severity: 'high',
+        title: `Multiple players from same IP: ${players.size}`,
+        description: `IP ${ip} has ${players.size} distinct players/sessions. Possible multi-accounting.`,
+        timestamp: new Date().toISOString(),
+        playerId: Array.from(players)[0],
+        suggestedAction: 'Review IP; consider device fingerprint or block.',
+        acknowledged: false,
+      };
+    }
+  }
+  return null;
+}
+
+/** Same deviceId, many different players (multi-account). */
+function detectMultiAccountDevice(recent: CasinoEvent[]): Omit<FraudAlert, 'id'> | null {
+  const threshold = cfg().playersPerDeviceThreshold;
+  const withDev = recent.filter((e) => e.deviceId && (e.playerId || e.sessionId));
+  if (withDev.length < threshold * 2) return null;
+  const byDevice = new Map<string, Set<string>>();
+  for (const e of withDev) {
+    const dev = e.deviceId!;
+    const entity = e.playerId ?? e.sessionId ?? 'unknown';
+    if (!byDevice.has(dev)) byDevice.set(dev, new Set());
+    byDevice.get(dev)!.add(entity);
+  }
+  for (const [deviceId, players] of Array.from(byDevice)) {
+    if (players.size >= threshold) {
+      return {
+        type: 'multi_account_device',
+        severity: 'high',
+        title: `Multiple players from same device: ${players.size}`,
+        description: `Device ${deviceId.slice(0, 12)}... has ${players.size} distinct players. Possible multi-accounting.`,
+        timestamp: new Date().toISOString(),
+        playerId: Array.from(players)[0],
+        suggestedAction: 'Review device; consider account linking rules.',
+        acknowledged: false,
+      };
     }
   }
   return null;
