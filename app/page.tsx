@@ -1,6 +1,7 @@
 'use client';
 
-import { useEffect, useState, useCallback } from 'react';
+import { Suspense, useEffect, useState, useCallback, useMemo } from 'react';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { format } from 'date-fns';
 import {
   BarChart,
@@ -43,8 +44,30 @@ const TYPE_LABELS: Record<string, string> = {
 
 type TabId = 'overview' | 'alerts' | 'watchlist' | 'events' | 'export';
 
-export default function Dashboard() {
+function DashboardInner() {
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const validTabIds = useMemo(
+    () => new Set<TabId>(['overview', 'alerts', 'watchlist', 'events', 'export']),
+    []
+  );
+
   const [tab, setTab] = useState<TabId>('overview');
+
+  useEffect(() => {
+    const p = searchParams.get('tab');
+    if (p && validTabIds.has(p as TabId)) {
+      setTab((t) => (t === p ? t : (p as TabId)));
+    }
+  }, [searchParams, validTabIds]);
+
+  const selectTab = useCallback(
+    (id: TabId) => {
+      setTab(id);
+      router.replace(`?tab=${id}`, { scroll: false });
+    },
+    [router]
+  );
   const [alerts, setAlerts] = useState<FraudAlert[]>([]);
   const [stats, setStats] = useState<FraudStats | null>(null);
   const [watchList, setWatchList] = useState<WatchListEntry[]>([]);
@@ -242,7 +265,7 @@ export default function Dashboard() {
         {tabs.map(({ id, label }) => (
           <button
             key={id}
-            onClick={() => setTab(id)}
+            onClick={() => selectTab(id)}
             className={`rounded-t-lg border-b-2 px-4 py-2 text-sm transition-colors ${
               tab === id ? 'tab-active' : 'tab-inactive'
             }`}
@@ -663,5 +686,22 @@ export default function Dashboard() {
         </div>
       )}
     </div>
+  );
+}
+
+export default function Dashboard() {
+  return (
+    <Suspense
+      fallback={
+        <div className="flex min-h-screen items-center justify-center">
+          <div className="flex flex-col items-center gap-4">
+            <div className="h-8 w-8 animate-spin rounded-full border-2 border-emerald-500/30 border-t-emerald-500" />
+            <span className="text-zinc-400">Loading tracker...</span>
+          </div>
+        </div>
+      }
+    >
+      <DashboardInner />
+    </Suspense>
   );
 }

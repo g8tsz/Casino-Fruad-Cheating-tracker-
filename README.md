@@ -4,6 +4,8 @@
 
 Track **fraud and cheating** for **online and land-based** casinos: odd win %, bad requests, RTP/slot tampering, collusion, capping, chip passing, rate abuse, repeated-bet bots, impossible win sequences, session/time-of-day anomalies, and multi-account (IP/device). Works with **live data** from most website casinos via a simple ingest API.
 
+**Current release: v2.0.0** — see [CHANGELOG.md](./CHANGELOG.md) for ten major upgrades (versioned ingest, Zod validation, Docker, CI, health/version APIs, security headers, shareable dashboard URLs, and more).
+
 ---
 
 ## Features
@@ -19,8 +21,8 @@ Track **fraud and cheating** for **online and land-based** casinos: odd win %, b
 - **Session length / time-of-day anomalies** – Unusual session duration or activity concentration.
 - **Multi-account (IP / device)** – Same IP or `deviceId` used by many players.
 - **Watch list** – Players, tables, sessions, IPs to flag for collusion/behavior review.
-- **Live data** – POST events to `/api/ingest`; optional `ip` and `deviceId` for geo/device rules.
-- **Dashboard** – Overview (stats, alerts by type, alerts over time, top flagged players/tables), Alerts and Events with date range and “Last hour” filter, Export (JSON + CSV, daily digest), Config with **threshold presets** (strict / normal / lenient).
+- **Live data** – POST events to `/api/ingest` or **`/api/v1/ingest`** (stable path); optional `ip` and `deviceId` for geo/device rules.
+- **Dashboard** – Overview (stats, alerts by type, alerts over time, top flagged players/tables), Alerts and Events with date range and “Last hour” filter, Export (JSON + CSV, daily digest), Config with **threshold presets** (strict / normal / lenient). Tabs sync to **`?tab=overview|alerts|watchlist|events|export`** for bookmarks.
 - **Ingest** – Optional auth; **Idempotency-Key** header to dedupe; **rate limit** per IP or API key; **validation** with clear error messages; **webhook** on high/critical alerts.
 - **Retention** – Configurable retention for events and alerts; cleanup runs on ingest.
 - **Audit log** – Watch list and config changes (GET `/api/audit`).
@@ -43,8 +45,16 @@ Open **http://localhost:3001**. Use mock data by sending events to the ingest en
 ## Development
 
 - **Lint:** `npm run lint`
+- **Tests:** `npm test` (Vitest)
 - **Build:** `npm run build`
 - **Start (prod):** `npm start` (port 3001)
+- **Docker:** `docker compose up --build` (image uses Next.js [standalone output](https://nextjs.org/docs/app/building-your-application/deploying#docker-image))
+- **CI:** GitHub Actions runs lint, tests, and build on every push to `main` and on pull requests.
+
+### Ops endpoints
+
+- **`GET /api/health`** — liveness (JSON: `ok`, `uptimeSec`, `timestamp`).
+- **`GET /api/version`** — app name and version from `package.json`.
 
 Env vars are documented in **Config** below. Copy `.env.example` to `.env` and set as needed.
 
@@ -52,7 +62,7 @@ Env vars are documented in **Config** below. Copy `.env.example` to `.env` and s
 
 ## Ingest API (for website casinos)
 
-**POST /api/ingest**
+**POST /api/ingest** (same behavior as **POST /api/v1/ingest**)
 
 - Optional auth: `Authorization: Bearer <key>` or `X-API-Key: <key>` when `INGEST_API_KEY` is set.
 - **Idempotency-Key:** Send a unique key (e.g. UUID) to dedupe retries; same key returns cached response.
@@ -87,6 +97,9 @@ All events need **timestamp** (ISO string). On high/critical alert, optional **W
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `/api/ingest` | POST | Send events. Optional: Idempotency-Key, Bearer/X-API-Key. Rate limited. |
+| `/api/v1/ingest` | POST | Same as `/api/ingest` (versioned path for integrations). |
+| `/api/health` | GET | Liveness JSON for probes. |
+| `/api/version` | GET | App name, semver, Node version. |
 | `/api/alerts` | GET | List alerts. Query: limit, type, severity, playerId, acknowledged, from, to. |
 | `/api/alerts` | PATCH | Acknowledge alert (body: `{ id }`). |
 | `/api/watchlist` | GET / POST | List or add watch list entry (kind, value, reason). |

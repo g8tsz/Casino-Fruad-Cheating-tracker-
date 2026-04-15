@@ -1,0 +1,9 @@
+services:
+  tracker:
+    build: .
+    ports:
+      - '3001:3001'
+    environment:
+      - NODE_ENV=production
+      - DATA_SOURCE=memory
+      # - INGEST_API_KEY=change-me-in-production
